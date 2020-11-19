@@ -189,7 +189,9 @@ class DistributedDataParallel(nn.Module):
             logger.warning("torch.distributed is not initialized")
 
         # add hook to launch synchronization
-        self.register_backward_hook(self._backward_hook)
+        self._queue_callback = False
+        for param in self.module.parameters():
+            param.register_hook(self._backward_hook)
 
     @contextmanager
     def no_sync(self):
@@ -203,6 +205,7 @@ class DistributedDataParallel(nn.Module):
             self._require_sync = prev
 
     def forward(self, *args, **kwargs):
+        self._queue_callback = False
         args = self._input_to_device(args)
         kwargs = self._input_to_device(kwargs)
         return self.module(*args, **kwargs)
@@ -224,7 +227,7 @@ class DistributedDataParallel(nn.Module):
         self._comm_hooks[handle.id] = hook
         return handle
 
-    def _backward_hook(self, module, gin, gout):
+    def _backward_hook(self, *args, **kwargs):
         def _synchronize():
             if not self._require_sync:
                 return
@@ -270,7 +273,9 @@ class DistributedDataParallel(nn.Module):
                         self._broadcast_function(group, self._process_group)
 
         # PyTorch will invoke `_synchronize` after the backward computation.
-        Variable._execution_engine.queue_callback(_synchronize)
+        if not self._queue_callback:
+            Variable._execution_engine.queue_callback(_synchronize)
+            self._queue_callback = True
 
     def _input_to_device(self, obj):
         """Send data to the target device
